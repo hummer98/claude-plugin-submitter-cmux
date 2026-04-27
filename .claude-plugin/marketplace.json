@@ -1,0 +1,23 @@
+{
+  "name": "hummer98-claude-plugin-submitter-cmux",
+  "owner": {
+    "name": "hummer98",
+    "email": "github@hummer98"
+  },
+  "plugins": [
+    {
+      "name": "claude-plugin-submitter-cmux",
+      "source": "./",
+      "description": "Submit Claude Code plugins to the official Anthropic marketplace via cmux browser automation. Performs pre-submission self-checks, extracts metadata from plugin.json, and fills the Claude.ai submission form.",
+      "version": "0.1.0",
+      "author": {
+        "name": "hummer98"
+      },
+      "repository": "https://github.com/hummer98/claude-plugin-submitter-cmux",
+      "license": "MIT",
+      "keywords": ["claude-skill", "marketplace", "submission", "automation", "cmux", "browser"],
+      "category": "publishing",
+      "tags": ["marketplace", "submission", "cmux", "browser-automation", "publishing"]
+    }
+  ]
+}
