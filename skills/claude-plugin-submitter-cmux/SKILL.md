@@ -48,21 +48,28 @@ DESCRIPTION=$(jq -r '.description // ""' "$PLUGIN_JSON")
 REPOSITORY=$(jq -r '.repository // ""' "$PLUGIN_JSON")
 LICENSE=$(jq -r '.license // ""' "$PLUGIN_JSON")
 HOMEPAGE=$(jq -r '.homepage // ""' "$PLUGIN_JSON")
+AUTHOR=$(jq -r '.author // ""' "$PLUGIN_JSON")
 ```
 
 `repository` がオブジェクト形式 (`{"type":"git","url":"..."}`) の場合は `.repository.url` を試す。
+`homepage` は optional。空でも警告だけにとどめる（フォーム上 Docs URL のフォールバック候補として扱える）。
 
 ## Step 2: 送信前セルフチェック
 
 | 項目 | チェック | 失敗時の挙動 |
 |------|---------|------------|
-| `plugin.json` の `name` | 必須・kebab-case 推奨 | エラー表示・停止 |
-| `plugin.json` の `description` | 必須・10 文字以上 | エラー表示・停止 |
+| `plugin.json` の `name` | 必須・**kebab-case のみ** (`^[a-z][a-z0-9-]*$`) | エラー表示・停止 |
+| `plugin.json` の `description` | 必須・**30〜500 文字目安** | <30: warning / >500: warning / 空: 停止 |
 | `plugin.json` の `version` | 必須・semver | warning |
-| `plugin.json` の `repository` | 必須・GitHub URL | エラー表示・停止 |
+| `plugin.json` の `repository` | 必須・GitHub URL (`https://github.com/...`) | エラー表示・停止 |
+| `plugin.json` の `homepage` | 任意。あれば URL 形式 | warning |
 | `LICENSE` ファイル | 存在 | warning |
 | `README.md` | 存在 | エラー表示・停止 |
 | `PRIVACY.md` | 存在 | warning（フォーム入力時に Privacy URL を空にできる） |
+
+> **公式マーケットプレイス特有の制約（推測値あり）**:
+> - Plugin name は claude.ai 側で kebab-case のみ許可される可能性が高い。`my_plugin` や `MyPlugin` はバリデーションで弾かれる前提でローカル側でも止める。
+> - Description の文字数 30〜500 は経験則（claude.ai 側の正確な上限は未公開）。短すぎる / 長すぎる場合は warning にとどめ、ユーザーに調整を促す。
 
 `/claude-plugin-submitter-cmux:check` はここまで実行して結果を出力するだけ。
 
@@ -71,9 +78,9 @@ HOMEPAGE=$(jq -r '.homepage // ""' "$PLUGIN_JSON")
 不足項目があればユーザーに聞く。最低限必要なのは:
 - Plugin name (form の "Plugin details" の input)
 - Description (form の "Description" textarea)
-- Examples (form の "Examples" textarea — README から代表的な使い方を3つ抽出するか対話で聞く)
+- Examples (form の "Examples" textarea — 詳細は Step 6 の「Examples の抽出方法」)
 - Repository URL
-- Documentation URL（README.md の raw URL を提案）
+- Documentation URL（README.md の raw URL を提案、なければ `homepage` をフォールバック）
 - License (plugin.json から)
 - Privacy policy URL (PRIVACY.md の raw URL を提案、なければ空)
 - Submitter email（Claude.ai のログインアカウントが自動入力されるが確認）
@@ -89,15 +96,23 @@ cmux browser --surface $BSURF wait --load-state complete --timeout 15
 
 ## Step 5: Introduction ページ — 規約同意
 
-⚠️ **重要**: Introduction の規約 checkbox に同意しないと、最終 submit 時に "You must acknowledge the terms to continue." で戻される。
+⚠️ **重要**: Introduction の規約 checkbox に同意しないと、最終 submit 時に "You must acknowledge the terms to continue." で Introduction に戻される。最初のページで必ずチェックを入れる。
 
 ```bash
 cmux browser --surface $BSURF snapshot --selector "main" --max-depth 100
-# → checkbox の ref を探す。placeholder 内の文字列 "Anthropic" や heading "Introduction" が目印
+# → checkbox の ref を探す。heading "Introduction" の近くにある checkbox 行
 cmux browser --surface $BSURF click <checkbox-ref>
 cmux browser --surface $BSURF is checked <checkbox-ref>   # 1 を確認
 cmux browser --surface $BSURF click <次へ-button-ref>
 ```
+
+### エラー回復
+
+**`is checked` が 0 を返した場合**:
+1. checkbox 自体ではなく label をクリックしていた可能性 → snapshot を取り直し、role が `checkbox` の行の ref を再取得
+2. それでも 0 なら `cmux browser get html <ref>` で要素種別を確認
+3. label を含む親要素の ref を click してみる
+4. 3 回失敗したらユーザーに「ブラウザ画面で手動でチェックしてもらえますか」と依頼（このとき `cmux browser screenshot` で画面を提示）
 
 ## Step 6: Plugin information ページ
 
@@ -111,17 +126,78 @@ cmux browser --surface $BSURF click <次へ-button-ref>
 | Description (textarea) | `Describe what your plugin does...` | `plugin.json` の `description` + README の冒頭 |
 | Examples (textarea) | `Example 1: ...\nExample 2: ...` | README からユースケースを 3 つ |
 
+### placeholder から ref を引くヘルパーパターン
+
+`cmux browser snapshot --interactive` の出力は概ね次の形（簡略化）:
+
+```
+- textbox "GitHub repository URL" [ref=e42] placeholder="https://github.com/your-org/your-plugin"
+- textbox "Documentation URL"     [ref=e43] placeholder="https://your-plugin-docs.com"
+- textbox "Plugin name"           [ref=e44]
+- textbox "Description"           [ref=e45] placeholder="Describe what your plugin does..."
+- textbox "Examples"              [ref=e46] placeholder="Example 1: ..."
+```
+
+placeholder を含む行から ref を抽出する典型パターン:
+
 ```bash
-# 最新 snapshot から ref を取得
-cmux browser --surface $BSURF snapshot --selector "main" --max-depth 100
-cmux browser --surface $BSURF fill <e-repo>  "$REPOSITORY"
-cmux browser --surface $BSURF fill <e-docs>  "$DOCS_URL"
-cmux browser --surface $BSURF fill <e-name>  "$NAME"
-cmux browser --surface $BSURF fill <e-desc>  "$DESCRIPTION"
-cmux browser --surface $BSURF fill <e-examples> "$EXAMPLES"
-# 値を get value で全部検証
+SNAP=$(cmux browser --surface $BSURF snapshot --selector "main" --max-depth 100)
+
+# placeholder 文字列でマッチさせて ref を引く
+ref_repo=$(echo "$SNAP" | grep -E 'placeholder=".*github\.com/your-org' | grep -oE 'ref=e[0-9]+' | head -1 | cut -d= -f2)
+ref_docs=$(echo "$SNAP" | grep -E 'placeholder=".*your-plugin-docs' | grep -oE 'ref=e[0-9]+' | head -1 | cut -d= -f2)
+ref_desc=$(echo "$SNAP" | grep -E 'placeholder=".*Describe what your plugin' | grep -oE 'ref=e[0-9]+' | head -1 | cut -d= -f2)
+ref_examples=$(echo "$SNAP" | grep -E 'placeholder=".*Example 1' | grep -oE 'ref=e[0-9]+' | head -1 | cut -d= -f2)
+
+# Plugin name は placeholder がないので、accessible name "Plugin name" でマッチ
+ref_name=$(echo "$SNAP" | grep -E 'textbox "Plugin name"' | grep -oE 'ref=e[0-9]+' | head -1 | cut -d= -f2)
+```
+
+> snapshot の実際の出力フォーマットは `using-cmux/SKILL.md` の「snapshot 出力例」を一次情報源とする。上記は擬似コードであり、フォーマットが変わったら適宜 `grep` のパターンを調整する。
+
+### Examples の抽出方法
+
+README の `## Usage` / `## 使い方` セクションから 3 つのユースケースを抽出する。
+
+```bash
+# README から Usage セクションを切り出し（次の H2 まで）
+USAGE=$(awk '/^## (Usage|使い方)/{flag=1; next} /^## /{flag=0} flag' README.md)
+
+# 行頭の `-` `*` `/command` などを箇条書きとみなす
+# 上位 3 件を Example 1〜3 にマッピング
+```
+
+抽出に失敗したり、3 件に満たない場合のフォールバック:
+1. `plugin.json` の `description` をベースに Example 1 を生成
+2. ユーザーに「Examples に入れる代表的な使い方を 3 つ教えてください」と対話で確認
+3. 最低 1 件あれば送信は通る想定（claude.ai 側のバリデーション挙動は未確定 — warning にとどめる）
+
+### 入力と検証
+
+```bash
+cmux browser --surface $BSURF fill e$ref_repo  "$REPOSITORY"
+cmux browser --surface $BSURF fill e$ref_docs  "$DOCS_URL"
+cmux browser --surface $BSURF fill e$ref_name  "$NAME"
+cmux browser --surface $BSURF fill e$ref_desc  "$DESCRIPTION"
+cmux browser --surface $BSURF fill e$ref_examples "$EXAMPLES"
+
+# 各フィールドを get value で検証
+for r in $ref_repo $ref_docs $ref_name $ref_desc $ref_examples; do
+  v=$(cmux browser --surface $BSURF get value e$r)
+  echo "ref=$r value=${v:0:60}"
+done
+
 cmux browser --surface $BSURF click <次へ-button-ref>
 ```
+
+### エラー回復
+
+**`get value` が空を返した場合**:
+1. snapshot を取り直し、ref が変わっていないか確認（DOM 再構築で番号が変わることがある）
+2. `cmux browser get html e$ref` で要素種別を確認 — `<input>` ではなく `<textarea>` だった、もしくはラッパー `<div>` を掴んでいたケースあり
+3. 別 ref（同じ placeholder を持つ別要素）が存在する場合は `head -1` ではなく `tail -1` で取り直す
+4. それでも空なら `cmux browser type e$ref "$VALUE"` を試す（fill ではなく type でキー入力をシミュレート）
+5. 3 回失敗したらユーザーに該当フィールドを手動入力するよう依頼
 
 ## Step 7: Submission details ページ
 
@@ -133,45 +209,93 @@ cmux browser --surface $BSURF click <次へ-button-ref>
 | Privacy policy URL | placeholder `https://your-company.com/privacy` | PRIVACY.md の raw URL（任意） |
 | Submitter email | placeholder `contact@your-company.com` | Claude.ai ログインアカウントが自動入力される |
 
-⚠️ **Submitter email は ページ遷移で自動入力値に戻ることがある**。「レビューに提出」を押す直前に再確認すること。
+> "Supported platforms" は OS 選択ではなく、プラグインが動作する Claude のサーフェス（Claude Code / Claude Cowork）。一般的な Claude Code plugin であれば Claude Code のみチェックする。
+
+ref 取得は Step 6 と同じ placeholder ベースのパターンを使う。
+
+```bash
+SNAP=$(cmux browser --surface $BSURF snapshot --selector "main" --max-depth 100)
+ref_license=$(echo "$SNAP" | grep -E 'placeholder=".*MIT, Apache' | grep -oE 'ref=e[0-9]+' | head -1 | cut -d= -f2)
+ref_privacy=$(echo "$SNAP" | grep -E 'placeholder=".*your-company\.com/privacy' | grep -oE 'ref=e[0-9]+' | head -1 | cut -d= -f2)
+ref_email=$(echo "$SNAP" | grep -E 'placeholder=".*contact@your-company' | grep -oE 'ref=e[0-9]+' | head -1 | cut -d= -f2)
+```
+
+### Submitter email リセット対策
+
+⚠️ **Submitter email はページを行き来するとログインアカウントの値に戻ることがある**。希望のメールアドレスがある場合は、Step 8 の最終確認の直前に必ず再確認・再入力する。
+
+```bash
+# Step 7 末尾 〜 Step 8 の間に必ず実行
+current_email=$(cmux browser --surface $BSURF get value e$ref_email)
+if [ "$current_email" != "$DESIRED_EMAIL" ]; then
+  cmux browser --surface $BSURF fill e$ref_email "$DESIRED_EMAIL"
+  # 再検証
+  cmux browser --surface $BSURF get value e$ref_email
+fi
+```
 
 ## Step 8: 最終確認（必須）
 
-`get value` で全フィールドの値を取得し、ユーザーにテキスト形式で提示する。**screenshot は最終手段** — snapshot + get value で十分。
+`get value` で全フィールドの値を取得し、以下の Markdown テンプレートでユーザーに提示する（**screenshot は最終手段**。snapshot + get value で十分）。
 
-```
-Plugin information:
-- Repository: https://github.com/.../...
-- Docs: https://github.com/.../README.md
-- Name: my-plugin
-- Description: ... (truncated)
-- Examples: ... (truncated)
+````markdown
+## 申請内容の最終確認
 
-Submission details:
-- Claude Code: ✓ / Claude Cowork: ☐
-- License: MIT
-- Privacy URL: https://github.com/.../PRIVACY.md
-- Submitter email: user@example.com
+### Plugin information
+- **Repository**: <REPOSITORY>
+- **Docs URL**: <DOCS_URL>
+- **Plugin name**: <NAME>
+- **Description** (<LEN> 文字):
+  > <DESCRIPTION の先頭 200 文字、それ以上は ...>
+- **Examples**:
+  > <EXAMPLES の先頭 200 文字、それ以上は ...>
 
-「レビューに提出」を押しますか？
-```
+### Submission details
+- **Supported platforms**: Claude Code <✓ or ☐> / Claude Cowork <✓ or ☐>
+- **License**: <LICENSE>
+- **Privacy policy URL**: <PRIVACY_URL or "(空)">
+- **Submitter email**: <SUBMITTER_EMAIL>
+
+---
+
+上記の内容で「レビューに提出」を押してよろしいですか？ (yes / no / 修正したい項目)
+````
+
+ユーザーが「修正したい」と言った場合は、該当ステップに戻って fill し直す。
 
 ## Step 9: 提出
 
 ユーザーが承認したら:
 
 ```bash
+# 直前にもう一度 Submitter email を確認（リセット対策）
+cmux browser --surface $BSURF get value e$ref_email
+
 cmux browser --surface $BSURF click <レビューに提出-button-ref>
 sleep 2
 cmux browser --surface $BSURF snapshot --selector "main" --max-depth 80
-# heading "プラグインをレビューに送信しました" が出れば成功
 ```
+
+### エラー回復
+
+**snapshot の結果に "Introduction" heading や規約 checkbox が再び含まれている場合** = 規約未同意としてリトライさせられた状態:
+1. ユーザーに「規約 checkbox の同意状態がリセットされたため再同意します」と通知
+2. Step 5 を実行（規約 checkbox を click）
+3. 各ページの値が保持されているか snapshot で確認 — 消えていたら Step 6/7 を再実行
+4. Step 9 を再試行
+
+**snapshot に "You must acknowledge the terms" の文字列が見える場合** も同様に Step 5 からやり直す。
+
+**snapshot に他のバリデーションエラー（"required field" 等）が見える場合**:
+1. エラー文言の near にある field の ref を取得
+2. ユーザーにエラー内容を提示し、当該フィールドを再入力
+3. Step 9 を再試行
 
 ## Step 10: 完了の検証
 
-snapshot に `プラグインをレビューに送信しました` が含まれていれば成功。
+snapshot に `プラグインをレビューに送信しました` (または英語版 `Plugin submitted for review`) の heading が含まれていれば成功。
 
-含まれていなければエラー（典型例: Introduction ページに戻されている → 規約 checkbox 未同意）。原因をユーザーに報告し、必要なら Step 5 からやり直す。
+含まれていなければ Step 9 のエラー回復に従う。3 回連続で失敗したら自動化を諦め、`cmux browser screenshot` を撮ってユーザーに状態を提示し、手動操作を依頼する。
 
 ## ref に関する重要な注意
 
@@ -204,13 +328,14 @@ cmux browser --surface $BSURF fill <new-ref> "..."
 
 | ミス | 正しい方法 |
 |------|-----------|
-| Introduction の規約同意を飛ばす | 必ず checkbox を click してから先へ進む |
+| Introduction の規約同意を飛ばす | 必ず checkbox を click し `is checked` で 1 を確認してから先へ進む |
 | 古い ref を使い回す | ページ遷移後は必ず snapshot を取り直す |
-| Submitter email を確認せず submit | 最終送信前に `get value` で再確認 |
+| Submitter email を確認せず submit | 最終送信前に `get value` で再確認、必要なら再入力 |
 | 視覚確認のため毎回 screenshot を撮る | `snapshot` + `get value` でほぼ全て取得可能。screenshot はトークン消費が大きいので最終手段 |
 | eval で DOM 取得を試みる | WKWebView では失敗する。`get value` / `get attr` / `get html` を使う |
 | `--surface` で他ワークスペースを操作 | `using-cmux` の `cmux-send` 等を経由する（自動解決） |
+| Plugin name に snake_case や CamelCase を使う | kebab-case のみ。事前チェックでローカル側でも止める |
 
 ## using-cmux への参照
 
-cmux browser の基本操作（snapshot, fill, click, wait, get value 等）は `using-cmux/SKILL.md` の「ブラウザ自動化」セクションが一次情報源。本スキルでは申請フォーム固有の操作手順のみを記述する。
+cmux browser の基本操作（snapshot, fill, click, wait, get value 等）は `using-cmux/SKILL.md` の「ブラウザ自動化」セクションが一次情報源。本スキルでは申請フォーム固有の操作手順とエラー回復のみを記述する。
